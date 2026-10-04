@@ -37,6 +37,7 @@ dependencies {
     // Keep the dependency set on APIs supported by AGP 8.13 / compileSdk 36.
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.11.0")
+    implementation("androidx.work:work-runtime-ktx:2.11.0")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
