@@ -37,7 +37,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class Finding(val title: String, val detail: String, val severity: String)
 data class DeviceSnapshot(
     val model: String,
     val android: String,
