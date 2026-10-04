@@ -4,6 +4,7 @@ import android.app.AppOpsManager
 import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.pm.PackageInfo
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -64,7 +65,7 @@ object ScanEngine {
             val flags = pkg.requestedPermissionsFlags ?: IntArray(0)
             val granted = allRequested.mapIndexedNotNull { index, permission ->
                 if (permission in sensitive && index < flags.size &&
-                    flags[index] and PackageManager.FLAG_PERMISSION_GRANTED != 0) permission else null
+                    flags[index] and PackageInfo.REQUESTED_PERMISSION_GRANTED != 0) permission else null
             }
             val reasons = mutableListOf<String>()
             if ("android.permission.REQUEST_INSTALL_PACKAGES" in requested) reasons += "Can request package installation."
