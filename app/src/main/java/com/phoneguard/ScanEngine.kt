@@ -74,7 +74,7 @@ object ScanEngine {
 
         val penalty = apps.count { it.risk == "REVIEW" }.coerceAtMost(3) * 7 +
             apps.count { it.risk == "ATTENTION" }.coerceAtMost(4) * 3 +
-            if (accessibility) 4 else 0 + if (admins > 0) 4 else 0
+            (if (accessibility) 4 else 0) + (if (admins > 0) 4 else 0)
 
         return ScanReport((100 - penalty).coerceIn(0, 100), findings, apps, usage, vpn, overlay, accessibility, admins)
     }
