@@ -5,13 +5,15 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.BatteryManager
-import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.StatFs
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,8 +22,12 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -32,42 +38,100 @@ class MainActivity : ComponentActivity() {
 }
 
 data class Finding(val title: String, val detail: String, val severity: String)
-data class DeviceSnapshot(val model: String, val android: String, val battery: Int, val storageFree: Long, val storageTotal: Long)
+data class DeviceSnapshot(
+    val model: String,
+    val android: String,
+    val battery: Int,
+    val storageFree: Long,
+    val storageTotal: Long,
+    val memoryAvailable: Long,
+    val memoryTotal: Long
+)
+data class ScanUiState(
+    val running: Boolean = false,
+    val stage: String = "Ready",
+    val report: ScanReport? = null,
+    val files: List<StorageItem> = emptyList(),
+    val largeFiles: List<StorageItem> = emptyList(),
+    val suspiciousFiles: List<StorageItem> = emptyList(),
+    val duplicateGroups: List<List<StorageItem>> = emptyList(),
+    val error: String? = null,
+    val completedAt: Long? = null
+)
 
 private fun snapshot(context: Context): DeviceSnapshot {
     val battery = context.getSystemService(BatteryManager::class.java)
-        .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
+        ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.coerceIn(0, 100) ?: 0
     val stat = StatFs(Environment.getDataDirectory().path)
+    val memory = android.app.ActivityManager.MemoryInfo()
+    context.getSystemService(android.app.ActivityManager::class.java)?.getMemoryInfo(memory)
     return DeviceSnapshot(
         model = Build.MANUFACTURER.replaceFirstChar { it.titlecase(Locale.US) } + " " + Build.MODEL,
-        android = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
+        android = "Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
         battery = battery,
         storageFree = stat.availableBytes,
-        storageTotal = stat.totalBytes
+        storageTotal = stat.totalBytes,
+        memoryAvailable = memory.availMem,
+        memoryTotal = memory.totalMem
     )
 }
 
 @Composable
 fun PhoneGuardApp(activity: Activity) {
     var selected by remember { mutableStateOf(0) }
+    var state by remember { mutableStateOf(ScanUiState()) }
     val device = remember { snapshot(activity) }
-    val findings = remember {
-        buildList {
-            if (Build.VERSION.SECURITY_PATCH.isNotBlank())
-                add(Finding("Security patch", Build.VERSION.SECURITY_PATCH, "INFO"))
-            if (Build.TAGS?.contains("test-keys") == true)
-                add(Finding("Build integrity", "Test-keys detected in build tags.", "WARN"))
-            else
-                add(Finding("Build integrity", "No test-keys indicator detected.", "INFO"))
-            add(Finding("Protected areas", "Android prevents this app from inspecting some system/root-only locations.", "COVERAGE"))
+    val scope = rememberCoroutineScope()
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
+
+    fun runFullScan() {
+        if (state.running) return
+        state = state.copy(running = true, stage = "Inspecting device", error = null)
+        scope.launch {
+            try {
+                val report = withContext(Dispatchers.Default) { ScanEngine.scan(activity) }
+                state = state.copy(stage = "Scanning shared storage", report = report)
+                val files = withContext(Dispatchers.IO) { FileScanner.recentMedia(activity, 800) }
+                val large = FileScanner.large(files)
+                val suspicious = FileScanner.suspiciousExtension(files)
+                val duplicateCandidates = files.groupBy { it.bytes }
+                    .filter { it.key > 0 && it.value.size > 1 }
+                    .values.flatten().take(250)
+                val hashed = withContext(Dispatchers.IO) {
+                    FileScanner.withHashes(activity, duplicateCandidates, 200)
+                }
+                val duplicates = FileScanner.duplicateGroups(hashed)
+                state = state.copy(
+                    running = false,
+                    stage = "Complete",
+                    files = files,
+                    largeFiles = large,
+                    suspiciousFiles = suspicious,
+                    duplicateGroups = duplicates,
+                    completedAt = System.currentTimeMillis()
+                )
+            } catch (t: Throwable) {
+                state = state.copy(
+                    running = false,
+                    stage = "Scan stopped",
+                    error = t.message ?: "Unexpected scan error"
+                )
+            }
         }
     }
+
     MaterialTheme(colorScheme = lightColorScheme()) {
         Scaffold(
             topBar = {
                 TopAppBar(
                     title = { Text("PhoneGuard", fontWeight = FontWeight.Bold) },
-                    actions = { IconButton(onClick = {}) { Icon(Icons.Default.Settings, "Settings") } }
+                    actions = {
+                        IconButton(onClick = {
+                            openSettings(activity, Settings.ACTION_SECURITY_SETTINGS)
+                        }) { Icon(Icons.Default.Settings, "Settings") }
+                    }
                 )
             },
             bottomBar = {
@@ -76,12 +140,16 @@ fun PhoneGuardApp(activity: Activity) {
                         NavigationBarItem(
                             selected = selected == i,
                             onClick = { selected = i },
-                            icon = { Icon(when (i) {
-                                0 -> Icons.Default.Home
-                                1 -> Icons.Default.Security
-                                2 -> Icons.Default.Apps
-                                else -> Icons.Default.Folder
-                            }, label) },
+                            icon = {
+                                Icon(
+                                    when (i) {
+                                        0 -> Icons.Default.Home
+                                        1 -> Icons.Default.Security
+                                        2 -> Icons.Default.Apps
+                                        else -> Icons.Default.Folder
+                                    }, label
+                                )
+                            },
                             label = { Text(label) }
                         )
                     }
@@ -89,79 +157,149 @@ fun PhoneGuardApp(activity: Activity) {
             }
         ) { padding ->
             when (selected) {
-                0 -> HomeScreen(device, findings, padding)
-                1 -> SecurityScreen(findings, padding)
-                2 -> AppsScreen(activity, padding)
-                else -> StorageScreen(device, padding)
+                0 -> HomeScreen(device, state, padding, ::runFullScan)
+                1 -> SecurityScreen(state, padding, ::runFullScan)
+                2 -> AppsScreen(state, padding)
+                else -> StorageScreen(state, padding, permissionLauncher)
             }
         }
     }
 }
 
 @Composable
-private fun HomeScreen(device: DeviceSnapshot, findings: List<Finding>, padding: PaddingValues) {
-    val score = 82
-    LazyColumn(Modifier.padding(padding).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+private fun HomeScreen(device: DeviceSnapshot, state: ScanUiState, padding: PaddingValues, runScan: () -> Unit) {
+    val report = state.report
+    val score = report?.score ?: 0
+    LazyColumn(
+        Modifier.padding(padding).padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         item {
             Spacer(Modifier.height(12.dp))
             Text("Your phone command center", style = MaterialTheme.typography.headlineSmall)
-            Text("Local diagnostics. No personal files uploaded by default.")
+            Text("Local diagnostics. Personal files are not uploaded by default.")
         }
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Phone Health", style = MaterialTheme.typography.titleMedium)
-                    Text("$score / 100", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-                    Text("Foundation score • coverage shown separately")
-                    LinearProgressIndicator(progress = { score / 100f }, modifier = Modifier.fillMaxWidth())
+                    Text(if (report == null) "Phone Health" else "Security & Health Score", style = MaterialTheme.typography.titleMedium)
+                    Text(if (report == null) "—" else "${score} / 100", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+                    Text(if (report == null) "Run a full check to calculate a live score." else "Heuristic risk score; it is not a malware verdict.")
+                    if (report != null) {
+                        LinearProgressIndicator(progress = { score / 100f }, modifier = Modifier.fillMaxWidth())
+                    }
                 }
             }
         }
         item { DeviceCard(device) }
-        item { Text("Latest findings", style = MaterialTheme.typography.titleLarge) }
-        items(findings.take(3)) { FindingRow(it) }
+        if (state.running) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Scan in progress", fontWeight = FontWeight.Bold)
+                        Text(state.stage)
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        }
+        state.error?.let { error -> item { Text(error, color = MaterialTheme.colorScheme.error) } }
+        report?.let { r ->
+            item { Text("Latest findings", style = MaterialTheme.typography.titleLarge) }
+            items(r.findings.take(5)) { FindingRow(it) }
+            item {
+                Text(
+                    "Files checked: ${state.files.size} • large: ${state.largeFiles.size} • suspicious extensions: ${state.suspiciousFiles.size} • duplicate groups: ${state.duplicateGroups.size}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
         item {
-            Button(onClick = {}, Modifier.fillMaxWidth()) {
+            Button(onClick = runScan, enabled = !state.running, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Shield, null)
                 Spacer(Modifier.width(8.dp))
-                Text("Run full device check")
+                Text(if (state.running) "Scanning…" else "Run full device check")
             }
         }
     }
 }
 
 @Composable
-private fun SecurityScreen(findings: List<Finding>, padding: PaddingValues) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+private fun SecurityScreen(state: ScanUiState, padding: PaddingValues, runScan: () -> Unit) {
+    val context = LocalContext.current
+    val report = state.report
     LazyColumn(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Security", style = MaterialTheme.typography.headlineSmall) }
-        item { Text("Checks use Android APIs and distinguish verified results from inaccessible areas.") }
-        items(findings) { FindingRow(it) }
-        item { OutlinedButton(onClick = { openSettings(context, Settings.ACTION_SECURITY_SETTINGS) }, Modifier.fillMaxWidth()) { Text("Open Android security settings") } }
+        item { Text("PhoneGuard uses Android-exposed signals and clearly marks coverage limits.") }
+        if (report == null) {
+            item { Button(onClick = runScan, enabled = !state.running, modifier = Modifier.fillMaxWidth()) { Text("Run security scan") } }
+        } else {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Live score: ${report.score}/100", fontWeight = FontWeight.Bold)
+                        Text("${report.apps.size} apps with sensitive capabilities detected.")
+                        Text("VPN: ${if (report.vpnActive) "active" else "not detected"} • admins: ${report.activeDeviceAdmins}")
+                    }
+                }
+            }
+            items(report.findings) { FindingRow(it) }
+        }
+        item { OutlinedButton(onClick = { openSettings(context, Settings.ACTION_SECURITY_SETTINGS) }, modifier = Modifier.fillMaxWidth()) { Text("Open Android security settings") } }
+        item { OutlinedButton(onClick = { openSettings(context, Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:" + context.packageName) }, modifier = Modifier.fillMaxWidth()) { Text("Review overlay access") } }
+        item { OutlinedButton(onClick = { openSettings(context, Settings.ACTION_ACCESSIBILITY_SETTINGS) }, modifier = Modifier.fillMaxWidth()) { Text("Review accessibility services") } }
     }
 }
 
 @Composable
-private fun AppsScreen(activity: Activity, padding: PaddingValues) {
-    val apps = remember {
-        activity.packageManager.getInstalledPackages(0)
-            .map { it.applicationInfo?.loadLabel(activity.packageManager)?.toString() ?: it.packageName }
-            .distinct().sorted().take(100)
-    }
-    LazyColumn(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun AppsScreen(state: ScanUiState, padding: PaddingValues) {
+    val apps = state.report?.apps.orEmpty()
+    LazyColumn(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Text("Installed apps", style = MaterialTheme.typography.headlineSmall) }
-        item { Text("${apps.size} visible applications sampled. Permission-risk analysis will be expanded.") }
-        items(apps) { name ->
-            ListItem(headlineContent = { Text(name) }, leadingContent = { Icon(Icons.Default.Apps, null) })
-            HorizontalDivider()
+        item { Text(if (state.report == null) "Run a security scan to analyze installed apps." else "${apps.size} apps request at least one sensitive capability.") }
+        if (apps.isEmpty() && state.report != null) {
+            item { Text("No apps matched PhoneGuard's sensitive-permission heuristics.") }
+        }
+        items(apps.take(200)) { app ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(app.label, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        Text(app.risk)
+                    }
+                    Text(app.packageName, style = MaterialTheme.typography.bodySmall)
+                    Text(app.reasons.joinToString(" "))
+                    Text("Permissions: " + app.permissions.size)
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun StorageScreen(device: DeviceSnapshot, padding: PaddingValues) {
+private fun StorageScreen(
+    state: ScanUiState,
+    padding: PaddingValues,
+    permissionLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>>
+) {
+    val context = LocalContext.current
+    val device = remember { snapshot(context) }
     val used = (device.storageTotal - device.storageFree).coerceAtLeast(0)
     val ratio = if (device.storageTotal > 0) used.toFloat() / device.storageTotal else 0f
+    val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { }
+
+    fun requestDelete() {
+        if (Build.VERSION.SDK_INT < 30) return
+        val candidates = state.duplicateGroups.flatten().drop(1).take(50).mapNotNull {
+            runCatching { Uri.parse(it.uri) }.getOrNull()
+        }
+        if (candidates.isEmpty()) return
+        val pending = android.provider.MediaStore.createDeleteRequest(context.contentResolver, candidates)
+        deleteLauncher.launch(
+            androidx.activity.result.IntentSenderRequest.Builder(pending.intentSender).build()
+        )
+    }
+
     LazyColumn(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Storage", style = MaterialTheme.typography.headlineSmall) }
         item {
@@ -174,8 +312,44 @@ private fun StorageScreen(device: DeviceSnapshot, padding: PaddingValues) {
                 }
             }
         }
-        item { Text("Cleanup is confirmation-gated. Protected/system data is never silently deleted.") }
-        item { OutlinedButton(onClick = {}, Modifier.fillMaxWidth()) { Text("Analyze large & duplicate files") } }
+        item {
+            Text("Shared-storage scan results", style = MaterialTheme.typography.titleMedium)
+            Text("${state.files.size} sampled • ${state.largeFiles.size} large • ${state.suspiciousFiles.size} suspicious extensions • ${state.duplicateGroups.size} duplicate groups")
+        }
+        item {
+            OutlinedButton(
+                onClick = {
+                    val permissions = if (Build.VERSION.SDK_INT >= 33) {
+                        arrayOf(
+                            android.Manifest.permission.READ_MEDIA_IMAGES,
+                            android.Manifest.permission.READ_MEDIA_VIDEO,
+                            android.Manifest.permission.READ_MEDIA_AUDIO
+                        )
+                    } else arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                    permissionLauncher.launch(permissions)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Grant media access for a deeper shared-storage scan") }
+        }
+        item {
+            OutlinedButton(onClick = { openSettings(context, Settings.ACTION_INTERNAL_STORAGE_SETTINGS) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Open Android storage settings")
+            }
+        }
+        if (state.duplicateGroups.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
+            item {
+                Button(onClick = { requestDelete() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Review duplicate files for deletion")
+                }
+            }
+            item {
+                Text(
+                    "Deletion is never silent: Android shows a system confirmation dialog before media files are permanently deleted.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        item { Text("Protected/system and private app data are not silently scanned or deleted.") }
     }
 }
 
@@ -187,6 +361,7 @@ private fun DeviceCard(device: DeviceSnapshot) {
             Text(device.android)
             Text("Battery: ${device.battery}%")
             Text("Free storage: ${formatBytes(device.storageFree)}")
+            Text("Memory available: ${formatBytes(device.memoryAvailable)} / ${formatBytes(device.memoryTotal)}")
         }
     }
 }
@@ -194,7 +369,7 @@ private fun DeviceCard(device: DeviceSnapshot) {
 @Composable
 private fun FindingRow(finding: Finding) {
     val icon = when (finding.severity) {
-        "WARN" -> Icons.Default.Warning
+        "WARN", "REVIEW" -> Icons.Default.Warning
         "COVERAGE" -> Icons.Default.Info
         else -> Icons.Default.CheckCircle
     }
@@ -209,7 +384,9 @@ private fun FindingRow(finding: Finding) {
 
 private fun openSettings(context: Context, action: String, data: String? = null) {
     runCatching {
-        context.startActivity(Intent(action).apply { if (data != null) this.data = Uri.parse(data) })
+        context.startActivity(Intent(action).apply {
+            if (data != null) this.data = Uri.parse(data)
+        })
     }
 }
 
