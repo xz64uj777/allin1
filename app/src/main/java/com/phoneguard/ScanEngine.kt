@@ -9,6 +9,19 @@ import android.net.NetworkCapabilities
 import android.os.Build
 
 data class AppRisk(val label: String, val packageName: String, val permissions: List<String>, val risk: String, val reasons: List<String>)
+
+enum class FixMode { AUTOMATIC, GUIDED, INFORMATIONAL }
+
+data class Finding(
+    val title: String,
+    val detail: String,
+    val severity: String,
+    val explanation: String = detail,
+    val fixLabel: String = "Fix",
+    val fixMode: FixMode = FixMode.GUIDED,
+    val fixAction: String? = null
+)
+
 data class ScanReport(
     val score: Int,
     val findings: List<Finding>,
@@ -62,14 +75,30 @@ object ScanEngine {
         val admins = runCatching { context.getSystemService(DevicePolicyManager::class.java)?.activeAdmins?.size ?: 0 }.getOrDefault(0)
 
         val findings = buildList {
-            add(Finding("Sensitive-app permissions", "\${apps.size} installed apps request sensitive capabilities.", if (apps.any { it.risk == "REVIEW" }) "WARN" else "INFO"))
-            add(Finding("Usage access", if (usage) "Granted to PhoneGuard." else "Not granted; usage-based diagnostics are limited.", if (usage) "INFO" else "COVERAGE"))
-            add(Finding("VPN state", if (vpn) "An active VPN transport is detected." else "No active VPN transport detected.", "INFO"))
-            add(Finding("Overlay access", if (overlay) "PhoneGuard has overlay access." else "PhoneGuard does not have overlay access.", "INFO"))
-            add(Finding("Accessibility services", if (accessibility) "At least one accessibility service is enabled. Review unfamiliar services." else "No enabled accessibility service was reported.", if (accessibility) "REVIEW" else "INFO"))
-            add(Finding("Device administrators", if (admins > 0) "\${admins} active device administrator(s) reported. Review them if unexpected." else "No active device administrators reported.", if (admins > 0) "REVIEW" else "INFO"))
-            add(Finding("Security patch", Build.VERSION.SECURITY_PATCH, "INFO"))
-            add(Finding("Protected areas", "Android-protected app-private data, verified-boot partitions, and root-only locations are not scanned.", "COVERAGE"))
+            add(Finding("Sensitive-app permissions", "${apps.size} installed apps request sensitive capabilities.", if (apps.any { it.risk == "REVIEW" }) "WARN" else "INFO",
+                "Sensitive permissions are not proof of malware. Review apps you do not recognize or that request capabilities unrelated to their purpose.",
+                "Review apps", FixMode.GUIDED, "APP_LIST"))
+            add(Finding("Usage access", if (usage) "Granted to PhoneGuard." else "Not granted; usage-based diagnostics are limited.", if (usage) "INFO" else "COVERAGE",
+                "Usage access exposes app-usage statistics. PhoneGuard does not require it for its core security scan, so a missing grant is a coverage limitation rather than a security problem.",
+                "Open settings", FixMode.GUIDED, "USAGE_SETTINGS"))
+            add(Finding("VPN state", if (vpn) "An active VPN transport is detected." else "No active VPN transport detected.", "INFO",
+                "A VPN can be legitimate for work, privacy, or security. PhoneGuard can detect an active VPN transport but cannot decide whether its provider is trustworthy.",
+                "Review VPN", FixMode.GUIDED, "VPN_SETTINGS"))
+            add(Finding("Overlay access", if (overlay) "PhoneGuard has overlay access." else "PhoneGuard does not have overlay access.", "INFO",
+                "Overlay access lets an app draw above other apps. PhoneGuard does not need it for scanning, and Android requires user involvement for this special access.",
+                "Review overlays", FixMode.GUIDED, "OVERLAY_SETTINGS"))
+            add(Finding("Accessibility services", if (accessibility) "At least one accessibility service is enabled. Review unfamiliar services." else "No enabled accessibility service was reported.", if (accessibility) "REVIEW" else "INFO",
+                "Accessibility services can observe and interact with on-screen content for accessibility features. Many are legitimate; an unfamiliar service deserves review. PhoneGuard cannot safely disable another app's service itself.",
+                "Review services", FixMode.GUIDED, "ACCESSIBILITY_SETTINGS"))
+            add(Finding("Device administrators", if (admins > 0) "${admins} active device administrator(s) reported. Review them if unexpected." else "No active device administrators reported.", if (admins > 0) "REVIEW" else "INFO",
+                "Device administrator privileges can enforce security policies. Work, school, family-safety, and security tools may legitimately use them. Unexpected administrators should be reviewed before removal.",
+                "Review admins", FixMode.GUIDED, "DEVICE_ADMIN_SETTINGS"))
+            add(Finding("Security patch", Build.VERSION.SECURITY_PATCH, "INFO",
+                "This is the security patch date reported by Android. If it is older than expected, use the manufacturer's system-update screen. PhoneGuard cannot install system updates itself.",
+                "Check updates", FixMode.GUIDED, "SYSTEM_UPDATE_SETTINGS"))
+            add(Finding("Protected areas", "Android-protected app-private data, verified-boot partitions, and root-only locations are not scanned.", "COVERAGE",
+                "This is intentional. Android's sandbox and verified-boot protections keep ordinary apps from safely scanning or modifying many private/system locations. PhoneGuard does not root the device or bypass those protections.",
+                "Why protected?", FixMode.INFORMATIONAL, "PROTECTED_INFO"))
         }
 
         val penalty = apps.count { it.risk == "REVIEW" }.coerceAtMost(3) * 7 +
