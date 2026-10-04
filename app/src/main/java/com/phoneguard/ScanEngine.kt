@@ -4,11 +4,22 @@ import android.app.AppOpsManager
 import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.pm.PackageInfo
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 
-data class AppRisk(val label: String, val packageName: String, val permissions: List<String>, val risk: String, val reasons: List<String>)
+data class AppRisk(
+    val label: String,
+    val packageName: String,
+    val permissions: List<String>,
+    val grantedPermissions: List<String>,
+    val risk: String,
+    val reasons: List<String>,
+    val installer: String? = null,
+    val firstInstalledAt: Long = 0L,
+    val lastUpdatedAt: Long = 0L
+)
 
 enum class FixMode { AUTOMATIC, GUIDED, INFORMATIONAL }
 
@@ -48,8 +59,14 @@ object ScanEngine {
         val pm = context.packageManager
         val apps = pm.getInstalledPackages(PackageManager.GET_PERMISSIONS).mapNotNull { pkg ->
             val info = pkg.applicationInfo ?: return@mapNotNull null
-            val requested = pkg.requestedPermissions?.filter { it in sensitive }.orEmpty()
+            val allRequested = pkg.requestedPermissions.orEmpty()
+            val requested = allRequested.filter { it in sensitive }
             if (requested.isEmpty()) return@mapNotNull null
+            val flags = pkg.requestedPermissionsFlags ?: IntArray(0)
+            val granted = allRequested.mapIndexedNotNull { index, permission ->
+                if (permission in sensitive && index < flags.size &&
+                    flags[index] and PackageInfo.REQUESTED_PERMISSION_GRANTED != 0) permission else null
+            }
             val reasons = mutableListOf<String>()
             if ("android.permission.REQUEST_INSTALL_PACKAGES" in requested) reasons += "Can request package installation."
             if ("android.permission.SYSTEM_ALERT_WINDOW" in requested) reasons += "Can potentially draw over other apps."
@@ -60,7 +77,21 @@ object ScanEngine {
                 requested.size >= 2 -> "ATTENTION"
                 else -> "INFO"
             }
-            AppRisk(info.loadLabel(pm).toString(), pkg.packageName, requested, risk, reasons)
+            val installer = runCatching {
+                if (Build.VERSION.SDK_INT >= 30) pm.getInstallSourceInfo(pkg.packageName).installingPackageName
+                else null
+            }.getOrNull()
+            AppRisk(
+                info.loadLabel(pm).toString(),
+                pkg.packageName,
+                requested,
+                granted,
+                risk,
+                reasons,
+                installer,
+                pkg.firstInstallTime,
+                pkg.lastUpdateTime
+            )
         }.sortedByDescending { it.permissions.size }
 
         val usage = hasUsageAccess(context)
