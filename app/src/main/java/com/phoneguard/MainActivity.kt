@@ -369,18 +369,54 @@ private fun DeviceCard(device: DeviceSnapshot) {
 
 @Composable
 private fun FindingRow(finding: Finding) {
+    val context = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
     val icon = when (finding.severity) {
         "WARN", "REVIEW" -> Icons.Default.Warning
         "COVERAGE" -> Icons.Default.Info
         else -> Icons.Default.CheckCircle
     }
-    ListItem(
-        headlineContent = { Text(finding.title) },
-        supportingContent = { Text(finding.detail) },
-        leadingContent = { Icon(icon, null) },
-        trailingContent = { Text(finding.severity) }
-    )
-    HorizontalDivider()
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(icon, null)
+                    Column {
+                        Text(finding.title, fontWeight = FontWeight.Bold)
+                        Text(finding.severity, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "Less" else "Details")
+                }
+            }
+            Text(finding.detail)
+            if (expanded) {
+                HorizontalDivider()
+                Text("What this means", fontWeight = FontWeight.Bold)
+                Text(finding.explanation)
+                Text(
+                    when (finding.fixMode) {
+                        FixMode.AUTOMATIC -> "Automatic fix: PhoneGuard can perform this safely with your confirmation."
+                        FixMode.GUIDED -> "Guided fix: Android requires you to make the security-sensitive change in Settings."
+                        FixMode.INFORMATIONAL -> "No change is needed; this item explains an Android protection or coverage limit."
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Button(
+                onClick = { message = RemediationEngine.fix(context, finding.fixAction ?: "") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(finding.fixLabel)
+            }
+            message?.let {
+                Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
 }
 
 private fun openSettings(context: Context, action: String, data: String? = null) {
