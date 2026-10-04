@@ -76,6 +76,7 @@ private fun snapshot(context: Context): DeviceSnapshot {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PhoneGuardApp(activity: Activity) {
     var selected by remember { mutableStateOf(0) }
