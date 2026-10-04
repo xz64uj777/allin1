@@ -15,7 +15,7 @@ object RemediationEngine {
             "OVERLAY_SETTINGS" -> Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
             "ACCESSIBILITY_SETTINGS" -> Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             "DEVICE_ADMIN_SETTINGS" -> Intent(Settings.ACTION_SECURITY_SETTINGS)
-            "SYSTEM_UPDATE_SETTINGS" -> Intent(Settings.ACTION_SYSTEM_UPDATE_SETTINGS)
+            "SYSTEM_UPDATE_SETTINGS" -> Intent(Settings.ACTION_SETTINGS)
             "APP_LIST" -> Intent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS)
             else -> null
         } ?: return "No safe remediation is available for this finding."
