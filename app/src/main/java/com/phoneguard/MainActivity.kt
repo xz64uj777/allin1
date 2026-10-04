@@ -2,7 +2,10 @@ package com.phoneguard
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.BatteryManager
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -129,11 +132,12 @@ private fun HomeScreen(device: DeviceSnapshot, findings: List<Finding>, padding:
 
 @Composable
 private fun SecurityScreen(findings: List<Finding>, padding: PaddingValues) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     LazyColumn(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Security", style = MaterialTheme.typography.headlineSmall) }
         item { Text("Checks use Android APIs and distinguish verified results from inaccessible areas.") }
         items(findings) { FindingRow(it) }
-        item { OutlinedButton(onClick = {}, Modifier.fillMaxWidth()) { Text("Check special access & privacy controls") } }
+        item { OutlinedButton(onClick = { openSettings(context, Settings.ACTION_SECURITY_SETTINGS) }, Modifier.fillMaxWidth()) { Text("Open Android security settings") } }
     }
 }
 
@@ -201,6 +205,12 @@ private fun FindingRow(finding: Finding) {
         trailingContent = { Text(finding.severity) }
     )
     HorizontalDivider()
+}
+
+private fun openSettings(context: Context, action: String, data: String? = null) {
+    runCatching {
+        context.startActivity(Intent(action).apply { if (data != null) this.data = Uri.parse(data) })
+    }
 }
 
 private fun formatBytes(bytes: Long): String {
