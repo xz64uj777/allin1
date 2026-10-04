@@ -29,6 +29,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -261,15 +263,37 @@ private fun AppsScreen(state: ScanUiState, padding: PaddingValues) {
             item { Text("No apps matched PhoneGuard's sensitive-permission heuristics.") }
         }
         items(apps.take(200)) { app ->
+            val context = LocalContext.current
+            var expanded by remember(app.packageName) { mutableStateOf(false) }
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(app.label, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        Text(app.risk)
+                        Column(Modifier.weight(1f)) {
+                            Text(app.label, fontWeight = FontWeight.Bold)
+                            Text(app.packageName, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(app.risk, fontWeight = FontWeight.Bold)
                     }
-                    Text(app.packageName, style = MaterialTheme.typography.bodySmall)
                     Text(app.reasons.joinToString(" "))
-                    Text("Permissions: " + app.permissions.size)
+                    Text("Sensitive permissions: ${app.permissions.size} requested • ${app.grantedPermissions.size} granted")
+                    if (expanded) {
+                        HorizontalDivider()
+                        Text("Evidence", fontWeight = FontWeight.Bold)
+                        Text("Granted: " + (app.grantedPermissions.joinToString(", ").ifBlank { "None" }))
+                        Text("Requested but not granted: " + (app.permissions.filter { it !in app.grantedPermissions }.joinToString(", ").ifBlank { "None" }))
+                        Text("Installer: " + (app.installer ?: "Not reported"))
+                        Text("Installed: " + formatDate(app.firstInstalledAt))
+                        Text("Updated: " + formatDate(app.lastUpdatedAt))
+                        Text("Why review it: PhoneGuard uses capability-based heuristics. This is not proof that the app is malicious.")
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { expanded = !expanded }, modifier = Modifier.weight(1f)) {
+                            Text(if (expanded) "Hide evidence" else "Evidence")
+                        }
+                        Button(onClick = { RemediationEngine.openApp(context, app.packageName) }, modifier = Modifier.weight(1f)) {
+                            Text("Fix / Review")
+                        }
+                    }
                 }
             }
         }
@@ -425,6 +449,8 @@ private fun openSettings(context: Context, action: String, data: String? = null)
         })
     }
 }
+
+private fun formatDate(time: Long): String = if (time <= 0L) "Not reported" else DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(time))
 
 private fun formatBytes(bytes: Long): String {
     if (bytes < 1024) return "$bytes B"
