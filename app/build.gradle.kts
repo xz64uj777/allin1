@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.compile.JavaCompile
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -30,11 +32,18 @@ android {
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(17)
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.01.00")
     implementation(composeBom)
 
-    // Keep the dependency set on APIs supported by AGP 8.13 / compileSdk 36.
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.work:work-runtime-ktx:2.11.0")
